@@ -19,6 +19,18 @@ Backend application shell and BFF proxy for backoffice workflows.
 - `npm run start` starts the local API shell without file watching
 - `npm run verify` runs the scaffold checks for this repository
 
+## Manual Verification
+
+1. Copy `.env.example` to `.env.local`.
+2. Start the shell with `npm run dev`.
+3. Verify the shell endpoint with `curl -sS http://localhost:8080/health`.
+
+Expected response:
+
+```json
+{"environmentName":"local","service":"bof-be","status":"ok"}
+```
+
 ## Notes
 
 - The shell is intentionally dependency-free so the repo can boot immediately in a clean workspace.
