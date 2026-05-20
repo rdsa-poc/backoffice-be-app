@@ -8,7 +8,7 @@ import {
   parseEnvironmentFile,
   resolveAppConfig,
 } from "../src/config.ts";
-import { resolveRoute } from "../src/server.ts";
+import { resolveRoute, runServerCli } from "../src/server.ts";
 
 const envExampleUrl = new URL("../.env.example", import.meta.url);
 const packageJsonUrl = new URL("../package.json", import.meta.url);
@@ -230,4 +230,30 @@ test("backoffice backend scaffold reports missing configuration keys", () => {
       return true;
     },
   );
+});
+
+// Test: fails startup with explicit diagnostics naming each missing configuration value.
+// Validates: RDS-AC-006 (RDS-REQ-018 - Report missing required configuration values)
+test("backoffice backend scaffold reports startup diagnostics for missing config", async () => {
+  const startupErrors: string[] = [];
+  const startupLogs: string[] = [];
+
+  const exitCode = await runServerCli({
+    configLoader: () => {
+      throw new MissingConfigurationError("bof-be", [
+        "RADIOSA_ENVIRONMENT",
+        "RADIOSA_REALTIME_BASE_URL",
+      ]);
+    },
+    error: (message) => startupErrors.push(message),
+    log: (message) => startupLogs.push(message),
+  });
+
+  assert.equal(exitCode, 1);
+  assert.deepEqual(startupLogs, []);
+  assert.deepEqual(startupErrors, [
+    "bof-be failed to start because required configuration is missing.",
+    "Missing values: RADIOSA_ENVIRONMENT, RADIOSA_REALTIME_BASE_URL",
+    "Copy .env.example to .env.local or export the missing RADIOSA_* values.",
+  ]);
 });

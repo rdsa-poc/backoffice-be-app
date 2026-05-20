@@ -2,11 +2,21 @@ import http from "node:http";
 import { pathToFileURL } from "node:url";
 
 import { buildApiManifest, buildSmokeFlowBootstrap } from "./app.ts";
-import { loadAppConfig, type AppConfig } from "./config.ts";
+import {
+  MissingConfigurationError,
+  loadAppConfig,
+  type AppConfig,
+} from "./config.ts";
 
 export type RouteResponse = {
   payload: unknown;
   statusCode: number;
+};
+
+export type StartupOptions = {
+  configLoader?: () => AppConfig;
+  error?: (message: string) => void;
+  log?: (message: string) => void;
 };
 
 function jsonResponse(
@@ -26,9 +36,9 @@ export function resolveRoute(
   if (method === "GET" && url === "/health") {
     return {
       payload: {
-      environmentName: config.environmentName,
-      service: "bof-be",
-      status: "ok",
+        environmentName: config.environmentName,
+        service: "bof-be",
+        status: "ok",
       },
       statusCode: 200,
     };
@@ -97,14 +107,45 @@ export function startServer(config: AppConfig): Promise<http.Server> {
   });
 }
 
+export function formatStartupFailure(error: unknown): string[] {
+  if (error instanceof MissingConfigurationError) {
+    return [
+      "bof-be failed to start because required configuration is missing.",
+      `Missing values: ${error.missingKeys.join(", ")}`,
+      "Copy .env.example to .env.local or export the missing RADIOSA_* values.",
+    ];
+  }
+
+  const reason = error instanceof Error ? error.message : String(error);
+  return [`bof-be failed to start: ${reason}`];
+}
+
+export async function runServerCli(options: StartupOptions = {}): Promise<number> {
+  const configLoader = options.configLoader ?? (() => loadAppConfig());
+  const log = options.log ?? console.log;
+  const error = options.error ?? console.error;
+
+  try {
+    const config = configLoader();
+    await startServer(config);
+    log(`bof-be shell listening on http://localhost:${config.port} for ${config.environmentName}`);
+    return 0;
+  } catch (caughtError) {
+    for (const message of formatStartupFailure(caughtError)) {
+      error(message);
+    }
+
+    return 1;
+  }
+}
+
 const isEntrypoint =
   process.argv[1] !== undefined &&
   import.meta.url === pathToFileURL(process.argv[1]).href;
 
 if (isEntrypoint) {
-  const config = loadAppConfig();
-  await startServer(config);
-  console.log(
-    `bof-be shell listening on http://localhost:${config.port} for ${config.environmentName}`,
-  );
+  const exitCode = await runServerCli();
+  if (exitCode !== 0) {
+    process.exitCode = exitCode;
+  }
 }
