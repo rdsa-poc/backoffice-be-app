@@ -1,11 +1,13 @@
 import { existsSync, readFileSync } from "node:fs";
 
-const ENVIRONMENT_FILE_URL = new URL("../.env.local", import.meta.url);
+import { MissingConfigurationError } from "../../shared/errors/missing-configuration-error.ts";
+
+const ENVIRONMENT_FILE_URL = new URL("../../../../.env", import.meta.url);
 const DEFAULT_PORT = 8080;
+const DEFAULT_APP_ID = "bof-be";
 const REQUIRED_KEYS = [
   "RADIOSA_ENVIRONMENT",
-  "RADIOSA_APP_ID",
-  "RADIOSA_REALTIME_BASE_URL",
+  "RT_FN_BASE_URL",
 ] as const;
 
 type RequiredKey = (typeof REQUIRED_KEYS)[number];
@@ -17,19 +19,6 @@ export type AppConfig = {
   port: number;
   realtimeBaseUrl: string;
 };
-
-export class MissingConfigurationError extends Error {
-  readonly missingKeys: RequiredKey[];
-
-  constructor(serviceName: string, missingKeys: RequiredKey[]) {
-    const label = missingKeys.length === 1 ? "value" : "values";
-    super(
-      `Missing required configuration ${label} for ${serviceName}: ${missingKeys.join(", ")}`,
-    );
-    this.name = "MissingConfigurationError";
-    this.missingKeys = missingKeys;
-  }
-}
 
 export function parseEnvironmentFile(text: string): Record<string, string> {
   const environment: Record<string, string> = {};
@@ -69,7 +58,13 @@ export function loadLocalEnvironment(environment: EnvironmentSource = process.en
 }
 
 export function resolveAppConfig(environment: EnvironmentSource = process.env): AppConfig {
-  const missingKeys = REQUIRED_KEYS.filter((key) => readRequiredValue(environment, key) === undefined);
+  const missingKeys = REQUIRED_KEYS.filter((key) => {
+    if (key === "RT_FN_BASE_URL") {
+      return readDiscoveryValue(environment, key, "RADIOSA_REALTIME_BASE_URL") === undefined;
+    }
+
+    return readRequiredValue(environment, key) === undefined;
+  });
   if (missingKeys.length > 0) {
     throw new MissingConfigurationError("bof-be", missingKeys);
   }
@@ -77,10 +72,14 @@ export function resolveAppConfig(environment: EnvironmentSource = process.env): 
   const configuredPort = Number(environment.RADIOSA_PORT ?? environment.PORT ?? DEFAULT_PORT);
 
   return {
-    appId: readRequiredValue(environment, "RADIOSA_APP_ID")!,
+    appId: readOptionalValue(environment, "RADIOSA_APP_ID") ?? DEFAULT_APP_ID,
     environmentName: readRequiredValue(environment, "RADIOSA_ENVIRONMENT")!,
     port: Number.isFinite(configuredPort) ? configuredPort : DEFAULT_PORT,
-    realtimeBaseUrl: readRequiredValue(environment, "RADIOSA_REALTIME_BASE_URL")!,
+    realtimeBaseUrl: readDiscoveryValue(
+      environment,
+      "RT_FN_BASE_URL",
+      "RADIOSA_REALTIME_BASE_URL",
+    )!,
   };
 }
 
@@ -104,6 +103,21 @@ function readRequiredValue(
   environment: EnvironmentSource,
   key: RequiredKey,
 ): string | undefined {
+  return readOptionalValue(environment, key);
+}
+
+function readOptionalValue(
+  environment: EnvironmentSource,
+  key: string,
+): string | undefined {
   const value = environment[key]?.trim();
   return value === "" ? undefined : value;
+}
+
+function readDiscoveryValue(
+  environment: EnvironmentSource,
+  primaryKey: RequiredKey,
+  legacyKey: string,
+): string | undefined {
+  return readOptionalValue(environment, primaryKey) ?? readOptionalValue(environment, legacyKey);
 }
