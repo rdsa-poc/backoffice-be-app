@@ -30,7 +30,7 @@ export function createServer(config: AppConfig): http.Server {
 export function startServer(config: AppConfig): Promise<http.Server> {
   const server = createServer(config);
   return new Promise((resolve) => {
-    server.listen(config.port, () => resolve(server));
+    server.listen(config.port, config.host, () => resolve(server));
   });
 }
 
@@ -55,7 +55,9 @@ export async function runServerCli(options: StartupOptions = {}): Promise<number
   try {
     const config = configLoader();
     await startServer(config);
-    log(`bof-be shell listening on http://localhost:${config.port} for ${config.environmentName}`);
+    log(
+      `bof-be shell listening on http://${config.host}:${config.port} for ${config.environmentName}`,
+    );
     return 0;
   } catch (caughtError) {
     for (const message of formatStartupFailure(caughtError)) {

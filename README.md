@@ -27,9 +27,12 @@ The scaffold now follows the layered backend baseline under `src/app`, `src/api`
 - `RT_FN_BASE_URL` points to the local realtime shell, which defaults to `http://localhost:5001`.
 - `RADIOSA_APP_ID` is optional for `bof-be`; the shell defaults it to the repo identifier when omitted from the shared root contract.
 - `RADIOSA_PORT` is optional and overrides the local API port when needed.
+- `RADIOSA_BIND_HOST` is optional and controls which local interface the API binds to. Leave it unset for `127.0.0.1`, or set it to `0.0.0.0` for phone/emulator access.
 - `npm run dev` starts the local API shell on `http://localhost:8080`
 - `npm run start` starts the local API shell without file watching
 - `npm run verify` runs the scaffold checks for this repository
+
+For the full local stack bootstrap from the workspace root, use `../scripts/start-local-stack.sh`.
 
 ## Manual Verification
 
