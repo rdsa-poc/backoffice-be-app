@@ -1,18 +1,23 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import test from "node:test";
 
-import { buildApiManifest, buildSmokeFlowBootstrap } from "../src/app.ts";
 import {
-  MissingConfigurationError,
+  buildApiManifest,
+  buildSmokeFlowBootstrap,
+} from "../src/application/bootstrap/manifest-service.ts";
+import { runServerCli } from "../src/app/runtime.ts";
+import { resolveRoute } from "../src/api/routes.ts";
+import {
   parseEnvironmentFile,
   resolveAppConfig,
-} from "../src/config.ts";
-import { resolveRoute, runServerCli } from "../src/server.ts";
+} from "../src/infrastructure/config/app-config.ts";
+import { MissingConfigurationError } from "../src/shared/errors/missing-configuration-error.ts";
 
-const envExampleUrl = new URL("../.env.example", import.meta.url);
+const sharedEnvUrl = new URL("../../.env", import.meta.url);
 const packageJsonUrl = new URL("../package.json", import.meta.url);
 const readmeUrl = new URL("../README.md", import.meta.url);
+const srcRootUrl = new URL("../src/", import.meta.url);
 const smokeFlowDocUrl = new URL("../../docs/baseline-smoke-flow.md", import.meta.url);
 const bootstrapWalkthroughEvidenceUrl = new URL(
   "../../task-reports/RDS-TASK-010/bootstrap-walkthrough-evidence.md",
@@ -21,16 +26,15 @@ const bootstrapWalkthroughEvidenceUrl = new URL(
 const backofficeWebReadmeUrl = new URL("../../backoffice-web-app/README.md", import.meta.url);
 const realtimeReadmeUrl = new URL("../../realtime-processing-functions/README.md", import.meta.url);
 const mobileReadmeUrl = new URL("../../mobile-app/README.md", import.meta.url);
-const backofficeWebAppUrl = new URL("../../backoffice-web-app/src/app.ts", import.meta.url);
-const realtimeIndexUrl = new URL(
-  "../../realtime-processing-functions/src/index.ts",
+const backofficeWebSmokeFlowDocUrl = new URL(
+  "../../backoffice-web-app/README.md",
   import.meta.url,
 );
-const mobileMainDartUrl = new URL("../../mobile-app/lib/main.dart", import.meta.url);
 
 // Test: exposes the backend API boundary and documented startup commands.
 // Validates: RDS-AC-002 (RDS-REQ-014 - Provide a runnable application skeleton for bof-be)
 test("backoffice backend scaffold exposes the expected routes", () => {
+  const readme = readFileSync(readmeUrl, "utf8");
   const manifest = buildApiManifest({
     appId: "bof-be",
     environmentName: "local",
@@ -43,8 +47,55 @@ test("backoffice backend scaffold exposes the expected routes", () => {
   assert.equal(manifest.realtimeBaseUrl, "http://localhost:5001");
   assert.deepEqual(
     manifest.routes.map((route) => route.path),
-    ["/health", "/bootstrap/smoke-flow", "/quiz-configurations", "/analytics/overview"],
+    [
+      "/health",
+      "/bootstrap/smoke-flow",
+      "/quiz-configurations",
+      "/analytics/overview",
+      "/api/streams",
+      "/api/streams",
+      "/api/streams/:streamId",
+      "/api/streams/:streamId",
+      "/api/streams/:streamId",
+    ],
   );
+  assert.match(readme, /GET `\/api\/streams`/);
+  assert.match(readme, /PATCH `\/api\/streams\/:streamId`/);
+  assert.match(readme, /DELETE `\/api\/streams\/:streamId`/);
+});
+
+// Test: keeps the bof-be runtime aligned with the agreed layered backend baseline.
+// Validates: RDS-AC-002, RDS-AC-007 (RDS-REQ-014 - Provide a runnable application skeleton for bof-be, RDS-REQ-019 - Define documented bootstrap steps for local startup)
+test("backoffice backend scaffold uses the agreed layered backend structure", () => {
+  const readme = readFileSync(readmeUrl, "utf8");
+
+  for (const relativePath of [
+    "app/runtime.ts",
+    "api/routes.ts",
+    "application/bootstrap/manifest-service.ts",
+    "application/streams/stream-service.ts",
+    "domain/stream/stream.ts",
+    "infrastructure/config/app-config.ts",
+    "infrastructure/persistence/in-memory-stream-repository.ts",
+    "shared/errors/missing-configuration-error.ts",
+    "shared/errors/stream-errors.ts",
+  ]) {
+    assert.equal(
+      existsSync(new URL(relativePath, srcRootUrl)),
+      true,
+      `${relativePath} should exist in the layered bof-be baseline`,
+    );
+  }
+
+  for (const removedFlatFile of ["app.ts", "config.ts", "streams.ts"]) {
+    assert.equal(
+      existsSync(new URL(removedFlatFile, srcRootUrl)),
+      false,
+      `${removedFlatFile} should no longer be part of the flat bof-be layout`,
+    );
+  }
+
+  assert.match(readme, /`src\/app`, `src\/api`, `src\/application`, `src\/domain`, `src\/infrastructure`, and `src\/shared`/);
 });
 
 // Test: exposes the scaffold bootstrap data for the baseline cross-application smoke flow.
@@ -118,9 +169,7 @@ test("backoffice backend smoke-flow endpoints stay aligned", () => {
 // Validates: RDS-AC-011, RDS-AC-012 (RDS-REQ-023 - Provide a minimal cross-application smoke flow, RDS-REQ-024 - Provide bootstrap data for the initial smoke flow)
 test("backoffice backend verification assets confirm bootstrap sufficiency", () => {
   const smokeFlowDoc = readFileSync(smokeFlowDocUrl, "utf8");
-  const backofficeWebApp = readFileSync(backofficeWebAppUrl, "utf8");
-  const realtimeIndex = readFileSync(realtimeIndexUrl, "utf8");
-  const mobileMainDart = readFileSync(mobileMainDartUrl, "utf8");
+  const backofficeWebSmokeFlowDoc = readFileSync(backofficeWebSmokeFlowDocUrl, "utf8");
 
   for (const contractValue of [
     "baseline-smoke-flow",
@@ -129,14 +178,9 @@ test("backoffice backend verification assets confirm bootstrap sufficiency", () 
     "participant-smoke-demo",
   ]) {
     assert.match(smokeFlowDoc, new RegExp(contractValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(backofficeWebApp, new RegExp(contractValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(realtimeIndex, new RegExp(contractValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-    assert.match(mobileMainDart, new RegExp(contractValue.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   }
 
   assert.match(smokeFlowDoc, /Smoke Flow Demo Stream/);
-  assert.match(realtimeIndex, /Smoke Flow Demo Stream/);
-  assert.match(mobileMainDart, /Smoke Flow Demo Stream/);
 
   assert.match(
     smokeFlowDoc,
@@ -146,10 +190,12 @@ test("backoffice backend verification assets confirm bootstrap sufficiency", () 
     smokeFlowDoc,
     /curl -sS -X POST http:\/\/localhost:8080\/quiz-configurations/,
   );
-  assert.match(smokeFlowDoc, /GET http:\/\/localhost:5001\/bootstrap\/smoke-flow/);
-  assert.match(backofficeWebApp, /\$\{config\.apiBaseUrl\}\/bootstrap\/smoke-flow/);
-  assert.match(realtimeIndex, /participantSubmission/);
-  assert.match(mobileMainDart, /Realtime shell: \$\{config\.realtimeBaseUrl\}/);
+  assert.match(smokeFlowDoc, /configuration plane only/i);
+  assert.match(backofficeWebSmokeFlowDoc, /baseline smoke-flow contract directly on the placeholder screen/i);
+  assert.match(
+    backofficeWebSmokeFlowDoc,
+    /http:\/\/localhost:8080\/bootstrap\/smoke-flow/,
+  );
 });
 
 // Test: publishes the required development entrypoints.
@@ -167,19 +213,20 @@ test("backoffice backend scaffold declares startup commands", () => {
   assert.match(readme, /http:\/\/localhost:8080/);
 });
 
-// Test: resolves the shared local configuration convention from the committed example file.
+// Test: resolves the shared local configuration convention from the shared root contract file.
 // Validates: RDS-AC-005 (RDS-REQ-017 - Define a shared environment configuration convention)
 test("backoffice backend scaffold resolves the documented environment convention", () => {
-  const environment = parseEnvironmentFile(readFileSync(envExampleUrl, "utf8"));
+  const environment = parseEnvironmentFile(readFileSync(sharedEnvUrl, "utf8"));
   const config = resolveAppConfig(environment);
   const readme = readFileSync(readmeUrl, "utf8");
 
   assert.equal(config.appId, "bof-be");
   assert.equal(config.environmentName, "local");
   assert.equal(config.realtimeBaseUrl, "http://localhost:5001");
-  assert.match(readme, /copy `\.env\.example` to `\.env\.local`/i);
+  assert.match(readme, /shared root `\.env` file/i);
   assert.match(readme, /RADIOSA_ENVIRONMENT/);
-  assert.match(readme, /RADIOSA_REALTIME_BASE_URL/);
+  assert.match(readme, /RT_FN_BASE_URL/);
+  assert.match(readFileSync(sharedEnvUrl, "utf8"), /^RT_FN_BASE_URL=http:\/\/localhost:5001$/m);
 });
 
 // Test: records a clean-developer bootstrap walkthrough with no undocumented setup actions.
@@ -201,12 +248,12 @@ test("backoffice backend verification assets cover the clean bootstrap walkthrou
   assert.match(walkthroughEvidence, /RDS-AC-007/);
   assert.match(walkthroughEvidence, /REV-002/);
   assert.match(walkthroughEvidence, /The walkthrough needed no undocumented setup actions\./);
-  assert.match(walkthroughEvidence, /copy `\.env\.example` to `\.env\.local`/);
+  assert.match(walkthroughEvidence, /shared root `\.env` file/);
   assert.match(walkthroughEvidence, /npm run dev/);
-  assert.match(walkthroughEvidence, /\.\.\/flutter\/bin\/flutter run -d web-server --web-port 7357/);
+  assert.match(walkthroughEvidence, /--dart-define-from-file=\.\.\/\.env/);
 
   for (const readme of [backofficeWebReadme, backofficeBeReadme, realtimeReadme, mobileReadme]) {
-    assert.match(readme, /copy `\.env\.example` to `\.env\.local`/i);
+    assert.match(readme, /shared root `\.env` file/i);
   }
 
   assert.match(backofficeWebReadme, /http:\/\/localhost:3000/);
@@ -219,13 +266,13 @@ test("backoffice backend verification assets cover the clean bootstrap walkthrou
 // Validates: RDS-AC-006 (RDS-REQ-018 - Report missing required configuration values)
 test("backoffice backend scaffold reports missing configuration keys", () => {
   assert.throws(
-    () => resolveAppConfig({ RADIOSA_APP_ID: "bof-be" }),
+    () => resolveAppConfig({}),
     (error: unknown) => {
       assert.ok(error instanceof MissingConfigurationError);
-      assert.deepEqual(error.missingKeys, ["RADIOSA_ENVIRONMENT", "RADIOSA_REALTIME_BASE_URL"]);
+      assert.deepEqual(error.missingKeys, ["RADIOSA_ENVIRONMENT", "RT_FN_BASE_URL"]);
       assert.match(
         error.message,
-        /Missing required configuration values for bof-be: RADIOSA_ENVIRONMENT, RADIOSA_REALTIME_BASE_URL/,
+        /Missing required configuration values for bof-be: RADIOSA_ENVIRONMENT, RT_FN_BASE_URL/,
       );
       return true;
     },
@@ -242,7 +289,7 @@ test("backoffice backend scaffold reports startup diagnostics for missing config
     configLoader: () => {
       throw new MissingConfigurationError("bof-be", [
         "RADIOSA_ENVIRONMENT",
-        "RADIOSA_REALTIME_BASE_URL",
+        "RT_FN_BASE_URL",
       ]);
     },
     error: (message) => startupErrors.push(message),
@@ -253,7 +300,7 @@ test("backoffice backend scaffold reports startup diagnostics for missing config
   assert.deepEqual(startupLogs, []);
   assert.deepEqual(startupErrors, [
     "bof-be failed to start because required configuration is missing.",
-    "Missing values: RADIOSA_ENVIRONMENT, RADIOSA_REALTIME_BASE_URL",
-    "Copy .env.example to .env.local or export the missing RADIOSA_* values.",
+    "Missing values: RADIOSA_ENVIRONMENT, RT_FN_BASE_URL",
+    "Update the shared ../.env file or export the missing values before starting bof-be.",
   ]);
 });

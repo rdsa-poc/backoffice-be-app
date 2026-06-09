@@ -1,4 +1,4 @@
-import type { AppConfig } from "./config.ts";
+import type { AppConfig } from "../../infrastructure/config/app-config.ts";
 
 export type ApiManifest = {
   environmentName: string;
@@ -6,7 +6,7 @@ export type ApiManifest = {
   service: "bof-be";
   capabilities: string[];
   routes: {
-    method: "GET" | "POST";
+    method: "DELETE" | "GET" | "PATCH" | "POST";
     path: string;
     purpose: string;
   }[];
@@ -39,6 +39,7 @@ export function buildApiManifest(config: AppConfig): ApiManifest {
       "quiz-configuration-validation",
       "quiz-state-propagation",
       "analytics-query-proxy",
+      "stream-source-of-truth-crud",
     ],
     routes: [
       {
@@ -60,6 +61,31 @@ export function buildApiManifest(config: AppConfig): ApiManifest {
         method: "GET",
         path: "/analytics/overview",
         purpose: "Expose a placeholder analytics response for the backoffice UI",
+      },
+      {
+        method: "GET",
+        path: "/api/streams",
+        purpose: "List the seeded Firestore-aligned stream source-of-truth records",
+      },
+      {
+        method: "POST",
+        path: "/api/streams",
+        purpose: "Create a draft stream record in the source-of-truth store",
+      },
+      {
+        method: "GET",
+        path: "/api/streams/:streamId",
+        purpose: "Read a single stream source-of-truth record",
+      },
+      {
+        method: "PATCH",
+        path: "/api/streams/:streamId",
+        purpose: "Update editable stream fields while preserving stream identity",
+      },
+      {
+        method: "DELETE",
+        path: "/api/streams/:streamId",
+        purpose: "Delete a non-active stream record from the source-of-truth store",
       },
     ],
   };

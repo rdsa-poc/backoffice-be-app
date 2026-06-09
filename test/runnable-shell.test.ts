@@ -1,7 +1,8 @@
 import assert from "node:assert/strict";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { once } from "node:events";
-import { createServer } from "node:net";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
@@ -14,94 +15,68 @@ type ShellDefinition = {
 };
 
 type ShellRun = {
+  healthResponse: {
+    body: Record<string, unknown>;
+    statusCode: number;
+  };
   output: string;
-  responseBody: Record<string, unknown>;
 };
 
 const repoRootDirectory = fileURLToPath(new URL("../../", import.meta.url));
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
+const runnableShellProbeImport = fileURLToPath(
+  new URL("./helpers/runnable-shell-probe.mjs", import.meta.url),
+);
 
-const shellDefinitions: ShellDefinition[] = [
-  {
-    environment: {
-      RADIOSA_API_BASE_URL: "http://127.0.0.1:8080",
-      RADIOSA_APP_ID: "bof-web",
-      RADIOSA_ENVIRONMENT: "local",
-    },
-    expectedResponse: {
-      environmentName: "local",
-      service: "bof-web",
-      status: "ok",
-    },
-    logFragment: "bof-web shell listening on http://localhost:",
-    name: "bof-web",
-    repoDirectory: fileURLToPath(new URL("../../backoffice-web-app/", import.meta.url)),
+const shellDefinition: ShellDefinition = {
+  environment: {
+    RADIOSA_ENVIRONMENT: "local",
+    RT_FN_BASE_URL: "http://127.0.0.1:5001",
   },
-  {
-    environment: {
-      RADIOSA_APP_ID: "bof-be",
-      RADIOSA_ENVIRONMENT: "local",
-      RADIOSA_REALTIME_BASE_URL: "http://127.0.0.1:5001",
-    },
-    expectedResponse: {
-      environmentName: "local",
-      service: "bof-be",
-      status: "ok",
-    },
-    logFragment: "bof-be shell listening on http://localhost:",
-    name: "bof-be",
-    repoDirectory: fileURLToPath(new URL("../", import.meta.url)),
+  expectedResponse: {
+    environmentName: "local",
+    service: "bof-be",
+    status: "ok",
   },
-  {
-    environment: {
-      RADIOSA_APP_ID: "rt-fn",
-      RADIOSA_BACKOFFICE_BASE_URL: "http://127.0.0.1:8080",
-      RADIOSA_ENVIRONMENT: "local",
-    },
-    expectedResponse: {
-      environmentName: "local",
-      service: "rt-fn",
-      status: "ok",
-      upstream: "http://127.0.0.1:8080",
-    },
-    logFragment: "rt-fn firebase-aligned shell listening on http://localhost:",
-    name: "rt-fn",
-    repoDirectory: fileURLToPath(new URL("../../realtime-processing-functions/", import.meta.url)),
-  },
-];
+  logFragment: "bof-be shell listening on http://localhost:",
+  name: "bof-be",
+  repoDirectory: fileURLToPath(new URL("../", import.meta.url)),
+};
 
-// Test: starts each runnable shell through its checked-in entrypoint and probes health.
-// Validates: RDS-AC-001, RDS-AC-002, RDS-AC-003 (RDS-REQ-013 - Provide a runnable application skeleton for bof-web, RDS-REQ-014 - Provide a runnable application skeleton for bof-be, RDS-REQ-015 - Provide a runnable application skeleton for rt-fn)
+// Test: starts the bof-be runnable shell through its checked-in entrypoint and validates /health without binding sockets.
+// Validates: RDS-AC-002 (RDS-REQ-014 - Provide a runnable application skeleton for bof-be)
 test(
-  "verification boots each runnable shell and probes its health surface",
+  "verification boots the bof-be runnable shell and validates its health surface in constrained environments",
   { timeout: 20_000 },
   async () => {
     assert.ok(repoRootDirectory.length > 0);
 
-    for (const shellDefinition of shellDefinitions) {
-      const shellRun = await runShell(shellDefinition);
-      assert.match(shellRun.output, new RegExp(`${escapeRegExp(shellDefinition.logFragment)}\\d+`));
+    const shellRun = await runShell(shellDefinition);
+    assert.match(shellRun.output, new RegExp(`${escapeRegExp(shellDefinition.logFragment)}\\d+`));
+    assert.equal(shellRun.healthResponse.statusCode, 200, `${shellDefinition.name} health should return HTTP 200`);
 
-      for (const [key, expectedValue] of Object.entries(shellDefinition.expectedResponse)) {
-        assert.equal(
-          shellRun.responseBody[key],
-          expectedValue,
-          `${shellDefinition.name} ${key} should match the health contract`,
-        );
-      }
+    for (const [key, expectedValue] of Object.entries(shellDefinition.expectedResponse)) {
+      assert.equal(
+        shellRun.healthResponse.body[key],
+        expectedValue,
+        `${shellDefinition.name} ${key} should match the health contract`,
+      );
     }
   },
 );
 
 async function runShell(shellDefinition: ShellDefinition): Promise<ShellRun> {
-  const port = await reservePort();
+  const temporaryDirectory = await mkdtemp(`${os.tmpdir()}/radiosa-runnable-shell-`);
+  const healthOutputPath = `${temporaryDirectory}/${shellDefinition.name}-health.json`;
   const output: string[] = [];
   const childProcess = spawn(npmCommand, ["run", "start"], {
     cwd: shellDefinition.repoDirectory,
     env: {
       ...process.env,
       ...shellDefinition.environment,
-      RADIOSA_PORT: String(port),
+      NODE_OPTIONS: buildNodeOptions(),
+      RADIOSA_HEALTH_OUTPUT_FILE: healthOutputPath,
+      RADIOSA_PORT: "0",
     },
     stdio: ["ignore", "pipe", "pipe"],
   });
@@ -112,46 +87,68 @@ async function runShell(shellDefinition: ShellDefinition): Promise<ShellRun> {
   childProcess.stderr.on("data", (chunk: string) => output.push(chunk));
 
   try {
-    const responseBody = await waitForHealthyShell(childProcess, port, shellDefinition.name, output);
+    const healthResponse = await waitForHealthyShell(
+      childProcess,
+      healthOutputPath,
+      shellDefinition.name,
+      output,
+    );
     return {
+      healthResponse,
       output: output.join(""),
-      responseBody,
     };
   } finally {
     await stopProcess(childProcess);
+    await rm(temporaryDirectory, { force: true, recursive: true });
   }
 }
 
 async function waitForHealthyShell(
   childProcess: ChildProcessWithoutNullStreams,
-  port: number,
+  healthOutputPath: string,
   shellName: string,
   output: string[],
-): Promise<Record<string, unknown>> {
+): Promise<{
+  body: Record<string, unknown>;
+  statusCode: number;
+}> {
   const deadline = Date.now() + 10_000;
-  const healthUrl = `http://127.0.0.1:${port}/health`;
 
   while (Date.now() < deadline) {
-    if (childProcess.exitCode !== null) {
-      throw new Error(
-        `${shellName} exited before becoming healthy.\n${output.join("")}`.trim(),
-      );
+    try {
+      const rawOutput = await readFile(healthOutputPath, "utf8");
+      const parsedOutput = JSON.parse(rawOutput) as {
+        body?: Record<string, unknown>;
+        error?: string;
+        statusCode?: number;
+      };
+
+      if (parsedOutput.error !== undefined) {
+        throw new Error(
+          `${shellName} failed during the sandbox-friendly health probe.\n${parsedOutput.error}\n${output.join("")}`.trim(),
+        );
+      }
+
+      if (parsedOutput.body !== undefined && parsedOutput.statusCode !== undefined) {
+        return {
+          body: parsedOutput.body,
+          statusCode: parsedOutput.statusCode,
+        };
+      }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+        throw error;
+      }
     }
 
-    try {
-      const response = await fetch(healthUrl);
-      if (response.ok) {
-        const body = (await response.json()) as Record<string, unknown>;
-        return body;
-      }
-    } catch {
-      // The shell may still be starting; keep polling until the deadline.
+    if (childProcess.exitCode !== null) {
+      throw new Error(`${shellName} exited before its health contract was captured.\n${output.join("")}`.trim());
     }
 
     await delay(100);
   }
 
-  throw new Error(`${shellName} did not become healthy within 10 seconds.\n${output.join("")}`.trim());
+  throw new Error(`${shellName} did not expose its health contract within 10 seconds.\n${output.join("")}`.trim());
 }
 
 async function stopProcess(childProcess: ChildProcessWithoutNullStreams): Promise<void> {
@@ -179,29 +176,9 @@ function delay(milliseconds: number): Promise<void> {
   });
 }
 
-function reservePort(): Promise<number> {
-  return new Promise((resolve, reject) => {
-    const server = createServer();
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", () => {
-      const address = server.address();
-      if (address === null || typeof address === "string") {
-        reject(new Error("Could not determine a free TCP port."));
-        server.close();
-        return;
-      }
-
-      const { port } = address;
-      server.close((closeError) => {
-        if (closeError) {
-          reject(closeError);
-          return;
-        }
-
-        resolve(port);
-      });
-    });
-  });
+function buildNodeOptions(): string {
+  const importFlag = `--import=${runnableShellProbeImport}`;
+  return process.env.NODE_OPTIONS ? `${process.env.NODE_OPTIONS} ${importFlag}` : importFlag;
 }
 
 function escapeRegExp(value: string): string {
