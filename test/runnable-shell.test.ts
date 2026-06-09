@@ -38,7 +38,7 @@ const shellDefinition: ShellDefinition = {
     service: "bof-be",
     status: "ok",
   },
-  logFragment: "bof-be shell listening on http://localhost:",
+  logFragment: "bof-be shell listening on http://127.0.0.1:",
   name: "bof-be",
   repoDirectory: fileURLToPath(new URL("../", import.meta.url)),
 };

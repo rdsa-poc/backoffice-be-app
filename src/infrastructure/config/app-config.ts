@@ -3,6 +3,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { MissingConfigurationError } from "../../shared/errors/missing-configuration-error.ts";
 
 const ENVIRONMENT_FILE_URL = new URL("../../../../.env", import.meta.url);
+const DEFAULT_HOST = "127.0.0.1";
 const DEFAULT_PORT = 8080;
 const DEFAULT_APP_ID = "bof-be";
 const REQUIRED_KEYS = [
@@ -16,6 +17,7 @@ type EnvironmentSource = Record<string, string | undefined>;
 export type AppConfig = {
   appId: string;
   environmentName: string;
+  host: string;
   port: number;
   realtimeBaseUrl: string;
 };
@@ -74,6 +76,7 @@ export function resolveAppConfig(environment: EnvironmentSource = process.env): 
   return {
     appId: readOptionalValue(environment, "RADIOSA_APP_ID") ?? DEFAULT_APP_ID,
     environmentName: readRequiredValue(environment, "RADIOSA_ENVIRONMENT")!,
+    host: readOptionalValue(environment, "RADIOSA_BIND_HOST") ?? DEFAULT_HOST,
     port: Number.isFinite(configuredPort) ? configuredPort : DEFAULT_PORT,
     realtimeBaseUrl: readDiscoveryValue(
       environment,
