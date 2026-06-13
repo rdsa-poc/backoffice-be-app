@@ -30,6 +30,7 @@ const runnableShellProbeImport = fileURLToPath(
 
 const shellDefinition: ShellDefinition = {
   environment: {
+    BOF_BE_STREAM_REPOSITORY: "memory",
     RADIOSA_ENVIRONMENT: "local",
     RT_FN_BASE_URL: "http://127.0.0.1:5001",
   },

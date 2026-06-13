@@ -1,13 +1,17 @@
+import { randomBytes } from "node:crypto";
+
 import type { StreamValidationIssue } from "../../shared/errors/stream-errors.ts";
-import { StreamValidationError } from "../../shared/errors/stream-errors.ts";
+import {
+  createActiveStreamDeleteForbiddenError,
+  createStreamUnpublishForbiddenError,
+  StreamValidationError,
+} from "../../shared/errors/stream-errors.ts";
 
 export type StreamStatus = "draft" | "inactive" | "active";
 
 export type StreamRecord = {
   createdAt: string;
   imageUrl: string;
-  projectionSyncState: "in_sync" | "sync_error";
-  publishedAt: string | null;
   status: StreamStatus;
   streamId: string;
   streamUrl: string;
@@ -18,6 +22,7 @@ export type StreamRecord = {
 
 export type StreamListItemDto = {
   availableActions: string[];
+  createdAt: string;
   imageUrl: string;
   position: number;
   status: StreamStatus;
@@ -27,9 +32,51 @@ export type StreamListItemDto = {
 
 export type StreamDetailDto = StreamRecord;
 
+export type MobileStreamProjectionDto = {
+  imageUrl: string;
+  streamId: string;
+  streamUrl: string;
+  summary: string;
+  title: string;
+};
+
+export type MobileStreamProjectionContract = {
+  detailPathPattern: "/mobile/streams/{streamId}";
+  discoveryCollectionPath: "/mobile/streams";
+  fields: {
+    imageUrl: "string";
+    streamId: "string";
+    streamUrl: "string";
+    summary: "string";
+    title: "string";
+  };
+  removalSemantics: {
+    detailSelectionMissingProjection: "show-stream-removed-error-and-return-to-discovery";
+    missingProjectionRecord: "treat-as-removed-from-mobile-discovery";
+    sourceOfTruthStatusesWithoutProjection: ["draft", "inactive"];
+  };
+  views: {
+    detail: ["imageUrl", "title", "summary", "streamUrl"];
+    discoveryList: ["imageUrl", "title", "summary"];
+  };
+};
+
+export type PublishStreamResponseDto = {
+  projectionTarget: string;
+  status: "active";
+  streamId: string;
+};
+
+export type UnpublishStreamResponseDto = {
+  projectionRemoved: true;
+  status: "inactive";
+  streamId: string;
+};
+
 export type CreateStreamInput = {
   imageUrl?: unknown;
   status?: unknown;
+  streamId?: unknown;
   streamUrl?: unknown;
   summary?: unknown;
   title?: unknown;
@@ -50,6 +97,7 @@ export function toStreamListItemDto(
 ): StreamListItemDto {
   return {
     availableActions: listAvailableActions(stream.status),
+    createdAt: stream.createdAt,
     imageUrl: stream.imageUrl,
     position,
     status: stream.status,
@@ -66,10 +114,17 @@ export function validateCreateStreamInput(input: CreateStreamInput): {
 } {
   const issues = collectEditableFieldIssues(input);
 
-  if (input.status !== undefined && input.status !== "draft") {
+  if (input.streamId !== undefined) {
+    issues.push({
+      field: "streamId",
+      message: "streamId is backend-generated and must not be provided on create.",
+    });
+  }
+
+  if (input.status !== undefined) {
     issues.push({
       field: "status",
-      message: "Created streams must start in draft status.",
+      message: "status is owned by the backend and must not be provided on create.",
     });
   }
 
@@ -88,7 +143,7 @@ export function validateCreateStreamInput(input: CreateStreamInput): {
 export function validateUpdateStreamInput(
   streamId: string,
   input: UpdateStreamInput,
-): Partial<Pick<StreamRecord, "imageUrl" | "status" | "streamUrl" | "summary" | "title">> {
+): Partial<Pick<StreamRecord, "imageUrl" | "streamUrl" | "summary" | "title">> {
   const issues: StreamValidationIssue[] = [];
 
   if (input.streamId !== undefined && input.streamId !== streamId) {
@@ -98,10 +153,10 @@ export function validateUpdateStreamInput(
     });
   }
 
-  if (input.status !== undefined && !isStreamStatus(input.status)) {
+  if (input.status !== undefined) {
     issues.push({
       field: "status",
-      message: "status must be one of draft, inactive, or active.",
+      message: "status is controlled by publish and unpublish actions.",
     });
   }
 
@@ -131,16 +186,12 @@ export function validateUpdateStreamInput(
     throw new StreamValidationError(issues);
   }
 
-  const patch: Partial<Pick<StreamRecord, "imageUrl" | "status" | "streamUrl" | "summary" | "title">> = {};
+  const patch: Partial<Pick<StreamRecord, "imageUrl" | "streamUrl" | "summary" | "title">> = {};
 
   for (const field of ["title", "summary", "streamUrl", "imageUrl"] as const) {
     if (input[field] !== undefined) {
       patch[field] = sanitizeString(input[field]);
     }
-  }
-
-  if (input.status !== undefined) {
-    patch.status = input.status;
   }
 
   return patch;
@@ -151,25 +202,124 @@ export function buildUniqueStreamId(
   existingIds: ReadonlySet<string>,
 ): string {
   const baseStreamId = slugifyTitle(title);
-  let candidate = baseStreamId;
-  let suffix = 2;
+  let candidate = `${baseStreamId}-${randomSuffix()}`;
 
   while (existingIds.has(candidate)) {
-    candidate = `${baseStreamId}-${suffix}`;
-    suffix += 1;
+    candidate = `${baseStreamId}-${randomSuffix()}`;
   }
 
   return candidate;
 }
 
-export function buildSeedStream(
-  stream: Omit<StreamRecord, "createdAt" | "projectionSyncState"> & { updatedAt: string },
+export function buildDraftStream(
+  input: CreateStreamInput,
+  existingIds: ReadonlySet<string>,
+  now = new Date().toISOString(),
 ): StreamRecord {
+  const validatedInput = validateCreateStreamInput(input);
+
   return {
-    ...stream,
-    createdAt: "2026-05-20T11:00:00.000Z",
-    projectionSyncState: "in_sync",
+    createdAt: now,
+    imageUrl: validatedInput.imageUrl,
+    status: "draft",
+    streamId: buildUniqueStreamId(validatedInput.title, existingIds),
+    streamUrl: validatedInput.streamUrl,
+    summary: validatedInput.summary,
+    title: validatedInput.title,
+    updatedAt: now,
   };
+}
+
+export function applyStreamUpdate(
+  existing: StreamRecord,
+  streamId: string,
+  input: UpdateStreamInput,
+  now = new Date().toISOString(),
+): StreamRecord {
+  const validatedPatch = validateUpdateStreamInput(streamId, input);
+
+  return {
+    ...existing,
+    ...validatedPatch,
+    updatedAt: now,
+  };
+}
+
+export function assertStreamCanBeDeleted(stream: StreamRecord): void {
+  if (stream.status === "active") {
+    throw createActiveStreamDeleteForbiddenError();
+  }
+}
+
+export function assertStreamCanBeUnpublished(stream: StreamRecord): void {
+  if (stream.status !== "active") {
+    throw createStreamUnpublishForbiddenError();
+  }
+}
+
+export function buildProjectionTarget(streamId: string): string {
+  return `/mobile/streams/${streamId}`;
+}
+
+export function buildMobileStreamProjection(
+  stream: StreamRecord,
+): MobileStreamProjectionDto {
+  return {
+    imageUrl: stream.imageUrl,
+    streamId: stream.streamId,
+    streamUrl: stream.streamUrl,
+    summary: stream.summary,
+    title: stream.title,
+  };
+}
+
+export function buildMobileStreamProjectionContract(): MobileStreamProjectionContract {
+  return {
+    detailPathPattern: "/mobile/streams/{streamId}",
+    discoveryCollectionPath: "/mobile/streams",
+    fields: {
+      imageUrl: "string",
+      streamId: "string",
+      streamUrl: "string",
+      summary: "string",
+      title: "string",
+    },
+    removalSemantics: {
+      detailSelectionMissingProjection: "show-stream-removed-error-and-return-to-discovery",
+      missingProjectionRecord: "treat-as-removed-from-mobile-discovery",
+      sourceOfTruthStatusesWithoutProjection: ["draft", "inactive"],
+    },
+    views: {
+      detail: ["imageUrl", "title", "summary", "streamUrl"],
+      discoveryList: ["imageUrl", "title", "summary"],
+    },
+  };
+}
+
+export function buildPublishStreamResponse(
+  stream: Pick<StreamRecord, "streamId">,
+): PublishStreamResponseDto {
+  return {
+    projectionTarget: buildProjectionTarget(stream.streamId),
+    status: "active",
+    streamId: stream.streamId,
+  };
+}
+
+export function buildUnpublishStreamResponse(
+  streamId: string,
+): UnpublishStreamResponseDto {
+  return {
+    projectionRemoved: true,
+    status: "inactive",
+    streamId,
+  };
+}
+
+export function buildSeedStream(
+  stream: StreamRecord,
+): StreamRecord {
+  return stream;
 }
 
 function collectEditableFieldIssues(
@@ -211,9 +361,9 @@ function slugifyTitle(title: string): string {
 function listAvailableActions(status: StreamStatus): string[] {
   switch (status) {
     case "active":
-      return ["deactivate", "edit", "view"];
+      return ["publish", "unpublish", "edit", "view"];
     case "inactive":
-      return ["activate", "edit", "view", "delete"];
+      return ["publish", "edit", "view", "delete"];
     case "draft":
       return ["publish", "edit", "view", "delete"];
   }
@@ -227,10 +377,6 @@ function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
-function isStreamStatus(value: unknown): value is StreamStatus {
-  return value === "draft" || value === "inactive" || value === "active";
-}
-
 function isValidHttpUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -238,4 +384,8 @@ function isValidHttpUrl(value: string): boolean {
   } catch {
     return false;
   }
+}
+
+function randomSuffix(): string {
+  return randomBytes(2).toString("hex");
 }

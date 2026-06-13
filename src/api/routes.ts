@@ -9,16 +9,27 @@ import {
   deleteStream,
   getStream,
   listStreams,
+  publishStream,
+  unpublishStream,
   updateStream,
 } from "../application/streams/stream-service.ts";
 import type { AppConfig } from "../infrastructure/config/app-config.ts";
 import {
-  createSeededStreamRepository,
-  type StreamRepository,
-} from "../infrastructure/persistence/in-memory-stream-repository.ts";
+  createStreamProjectionStore,
+} from "../infrastructure/persistence/create-stream-projection-store.ts";
+import {
+  createStreamRepository,
+} from "../infrastructure/persistence/create-stream-repository.ts";
+import {
+  createSeededStreamProjectionStore,
+  type StreamProjectionStore,
+} from "../infrastructure/persistence/stream-projection-store.ts";
+import { seededStreams } from "../infrastructure/persistence/stream-repository.ts";
+import type { StreamRepository } from "../infrastructure/persistence/stream-repository.ts";
 import {
   StreamConflictError,
   StreamNotFoundError,
+  StreamRealtimeSyncError,
   StreamValidationError,
 } from "../shared/errors/stream-errors.ts";
 
@@ -29,23 +40,26 @@ export type RouteResponse = {
 
 export type RouteContext = {
   config: AppConfig;
+  projectionStore: StreamProjectionStore;
   repository: StreamRepository;
 };
 
-export function createRouteContext(config: AppConfig): RouteContext {
+export async function createRouteContext(config: AppConfig): Promise<RouteContext> {
   return {
     config,
-    repository: createSeededStreamRepository(),
+    projectionStore: createStreamProjectionStore(config),
+    repository: await createStreamRepository(config),
   };
 }
 
-export function resolveRoute(
+export async function resolveRoute(
   method: string | undefined,
   url: string | undefined,
   config: AppConfig,
-  repository: StreamRepository = createSeededStreamRepository(),
+  repository: StreamRepository,
   requestBody: unknown = undefined,
-): RouteResponse {
+  projectionStore: StreamProjectionStore = createSeededStreamProjectionStore(seededStreams),
+): Promise<RouteResponse> {
   try {
     if (method === "GET" && url === "/health") {
       return {
@@ -97,37 +111,48 @@ export function resolveRoute(
 
     if (method === "GET" && url === "/api/streams") {
       return {
-        payload: listStreams(repository),
+        payload: await listStreams(repository),
         statusCode: 200,
       };
     }
 
     if (method === "POST" && url === "/api/streams") {
       return {
-        payload: createStream(repository, asObjectPayload(requestBody)),
+        payload: await createStream(repository, asObjectPayload(requestBody)),
         statusCode: 201,
       };
     }
 
     const streamId = readStreamId(url);
+    const lifecycleAction = readStreamLifecycleAction(url);
+
+    if (lifecycleAction !== null && method === "POST") {
+      return {
+        payload:
+          lifecycleAction.action === "publish"
+            ? await publishStream(repository, projectionStore, lifecycleAction.streamId)
+            : await unpublishStream(repository, projectionStore, lifecycleAction.streamId),
+        statusCode: 200,
+      };
+    }
 
     if (streamId !== null && method === "GET") {
       return {
-        payload: getStream(repository, streamId),
+        payload: await getStream(repository, streamId),
         statusCode: 200,
       };
     }
 
     if (streamId !== null && method === "PATCH") {
       return {
-        payload: updateStream(repository, streamId, asObjectPayload(requestBody)),
+        payload: await updateStream(repository, streamId, asObjectPayload(requestBody)),
         statusCode: 200,
       };
     }
 
     if (streamId !== null && method === "DELETE") {
       return {
-        payload: deleteStream(repository, streamId),
+        payload: await deleteStream(repository, streamId),
         statusCode: 200,
       };
     }
@@ -196,6 +221,18 @@ export function mapRouteError(error: unknown): [number, unknown] {
     ];
   }
 
+  if (error instanceof StreamRealtimeSyncError) {
+    return [
+      error.statusCode,
+      {
+        action: error.action,
+        error: error.code,
+        message: error.message,
+        projectionTarget: error.projectionTarget,
+      },
+    ];
+  }
+
   if (error instanceof StreamNotFoundError) {
     return [
       404,
@@ -223,6 +260,24 @@ function readStreamId(url: string | undefined): string | null {
 
   const match = /^\/api\/streams\/([^/]+)$/.exec(url);
   return match?.[1] ?? null;
+}
+
+function readStreamLifecycleAction(
+  url: string | undefined,
+): { action: "publish" | "unpublish"; streamId: string } | null {
+  if (url === undefined) {
+    return null;
+  }
+
+  const match = /^\/api\/streams\/([^/]+)\/(publish|unpublish)$/.exec(url);
+  if (match === null) {
+    return null;
+  }
+
+  return {
+    action: match[2] as "publish" | "unpublish",
+    streamId: match[1],
+  };
 }
 
 function asObjectPayload(value: unknown): Record<string, unknown> {

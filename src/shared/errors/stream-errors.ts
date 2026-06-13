@@ -25,6 +25,48 @@ export class StreamConflictError extends Error {
   }
 }
 
+export function createActiveStreamDeleteForbiddenError(): StreamConflictError {
+  return new StreamConflictError(
+    "ACTIVE_STREAM_DELETE_FORBIDDEN",
+    "Active streams must be unpublished before deletion.",
+  );
+}
+
+export function createStreamUnpublishForbiddenError(): StreamConflictError {
+  return new StreamConflictError(
+    "STREAM_UNPUBLISH_FORBIDDEN",
+    "Only active streams can be unpublished.",
+  );
+}
+
+export class StreamRealtimeSyncError extends Error {
+  readonly action: "publish" | "unpublish";
+  readonly code: string;
+  readonly projectionTarget: string;
+  readonly statusCode: number;
+
+  constructor(action: "publish" | "unpublish", projectionTarget: string, message: string) {
+    super(message);
+    this.name = "StreamRealtimeSyncError";
+    this.action = action;
+    this.code = "STREAM_REALTIME_SYNC_UNAVAILABLE";
+    this.projectionTarget = projectionTarget;
+    this.statusCode = 503;
+  }
+}
+
+export function createStreamRealtimeSyncUnavailableError(
+  action: "publish" | "unpublish",
+  projectionTarget: string,
+): StreamRealtimeSyncError {
+  const actionLabel = action === "publish" ? "Publish" : "Unpublish";
+  return new StreamRealtimeSyncError(
+    action,
+    projectionTarget,
+    `${actionLabel} requires realtime projection mutation support before the lifecycle contract can succeed.`,
+  );
+}
+
 export class StreamNotFoundError extends Error {
   constructor(streamId: string) {
     super(`Stream ${streamId} was not found.`);
