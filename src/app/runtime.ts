@@ -19,16 +19,15 @@ export type StartupOptions = {
   log?: (message: string) => void;
 };
 
-export function createServer(config: AppConfig): http.Server {
-  const context = createRouteContext(config);
-
+export function createServer(context: RouteContext): http.Server {
   return http.createServer((request, response) => {
     void handleRequest(request, response, context);
   });
 }
 
-export function startServer(config: AppConfig): Promise<http.Server> {
-  const server = createServer(config);
+export async function startServer(config: AppConfig): Promise<http.Server> {
+  const context = await createRouteContext(config);
+  const server = createServer(context);
   return new Promise((resolve) => {
     server.listen(config.port, config.host, () => resolve(server));
   });
@@ -73,14 +72,23 @@ async function handleRequest(
   response: http.ServerResponse,
   context: RouteContext,
 ): Promise<void> {
+  writeCorsHeaders(response, request);
+
+  if (request.method === "OPTIONS") {
+    response.writeHead(204);
+    response.end();
+    return;
+  }
+
   try {
     const requestBody = await readJsonBody(request);
-    const routeResponse = resolveRoute(
+    const routeResponse = await resolveRoute(
       request.method,
       request.url,
       context.config,
       context.repository,
       requestBody,
+      context.projectionStore,
     );
     jsonResponse(response, routeResponse.statusCode, routeResponse.payload);
   } catch (error) {
@@ -95,4 +103,28 @@ function jsonResponse(
 ): void {
   response.writeHead(statusCode, { "content-type": "application/json; charset=utf-8" });
   response.end(JSON.stringify(payload));
+}
+
+function writeCorsHeaders(
+  response: http.ServerResponse,
+  request: http.IncomingMessage,
+): void {
+  if (typeof response.setHeader !== "function") {
+    return;
+  }
+
+  const headers = request.headers ?? {};
+  const requestOrigin = headers.origin;
+  const requestHeaders = headers["access-control-request-headers"];
+
+  response.setHeader("access-control-allow-origin", requestOrigin ?? "*");
+  response.setHeader("access-control-allow-methods", "GET, POST, PATCH, DELETE, OPTIONS");
+  response.setHeader(
+    "access-control-allow-headers",
+    typeof requestHeaders === "string" && requestHeaders.trim() !== ""
+      ? requestHeaders
+      : "content-type",
+  );
+  response.setHeader("access-control-max-age", "600");
+  response.setHeader("vary", "Origin, Access-Control-Request-Headers");
 }

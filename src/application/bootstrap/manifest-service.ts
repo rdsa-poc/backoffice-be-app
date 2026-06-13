@@ -1,10 +1,14 @@
 import type { AppConfig } from "../../infrastructure/config/app-config.ts";
+import {
+  getMobileStreamProjectionContract,
+} from "../streams/stream-service.ts";
 
 export type ApiManifest = {
   environmentName: string;
   realtimeBaseUrl: string;
   service: "bof-be";
   capabilities: string[];
+  mobileStreamProjection: ReturnType<typeof getMobileStreamProjectionContract>;
   routes: {
     method: "DELETE" | "GET" | "PATCH" | "POST";
     path: string;
@@ -40,7 +44,12 @@ export function buildApiManifest(config: AppConfig): ApiManifest {
       "quiz-state-propagation",
       "analytics-query-proxy",
       "stream-source-of-truth-crud",
+      "stream-mobile-projection-lifecycle-contract",
+      config.streamProjectionPersistence?.driver === "firebase-rtdb"
+        ? "stream-mobile-projection-rtdb-persistence"
+        : "stream-mobile-projection-in-memory-fallback",
     ],
+    mobileStreamProjection: getMobileStreamProjectionContract(),
     routes: [
       {
         method: "GET",
@@ -86,6 +95,16 @@ export function buildApiManifest(config: AppConfig): ApiManifest {
         method: "DELETE",
         path: "/api/streams/:streamId",
         purpose: "Delete a non-active stream record from the source-of-truth store",
+      },
+      {
+        method: "POST",
+        path: "/api/streams/:streamId/publish",
+        purpose: "Publish or republish a stream to the mobile realtime projection target",
+      },
+      {
+        method: "POST",
+        path: "/api/streams/:streamId/unpublish",
+        purpose: "Remove an active stream from the mobile realtime projection target",
       },
     ],
   };
